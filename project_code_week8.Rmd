@@ -1,0 +1,284 @@
+---
+title: "Project_code_week8"
+author: "Yunfei Feng"
+date: "2023-03-13"
+output: html_document
+---
+```{r load_library, message=TRUE, warning=TRUE, include=FALSE}
+library(readxl)
+library(lubridate)
+library(dplyr)
+library(gcookbook) 
+library(ggplot2)
+library(corrplot)
+library(mgcv)
+library(reshape2)
+```
+
+```{r}
+###background
+#The COVID-19 related shutdowns have made significant impacts on the electric grid operation worldwide.  The global electrical demand plummeted around the planet in 2020 continuing into 2021.  Moreover, demand shape has been profoundly altered as a result of industry shutdowns, business closures, and people working from home.  In view of such massive electric demand changes, energy forecasting systems struggle to provide an accurate demand prediction, exposing operators to technical and financial risks, and further reinforcing the adverse economic impacts of the pandemic.
+
+###aim
+#The research purpose of this project is to apply the learned statistical knowledge to analyze the relevant power demand data, and mainly use the statistical tool GAM to fit and forecast the power demand data before and after the covid, and try to improve the relevant model.
+
+###data information
+#the electric demand data belonged to a metropolitan electric utility and represent the total system load for the metropolitan area.  There are approximately four years of data,from 2017-03-18 to 2020-11-06.Data was provided to participants in CSV files, including the following hourly measurements and day-ahead forecasts:
+#Electricity demand in kW.
+#Air Pressure observation and forecast in kPa.
+#Cloud cover observation and forecast in %.
+#Humidity observation and forecast in %.
+#Temperature observation and forecast in ◦C.
+#Wind direction observation and forecast in degrees.
+#Wind speed observation and forecast in km/h.
+```
+
+```{r}
+### load electric demand data from 2017 to 2020.
+# Yunfei path
+setwd("/Users/macbook/Desktop/project/Nuo_Zhang_Yunfei_Feng")
+dat_covid <- read_xlsx(path = "/Users/macbook/Desktop/project/Nuo_Zhang_Yunfei_Feng/Final/Actuals.xlsx")
+#Nuo path
+#setwd("/Users/zhangnuo/Desktop")
+#dat_covid <- read_xlsx(path = "/Users/zhangnuo/Desktop/Final/Actuals.xlsx")
+summary(dat_covid)
+head(dat_covid)
+```
+```{r}
+##rename variable to remove spaces
+names(dat_covid)[1] <- "Time"
+names(dat_covid)[2] <- "Load" 
+names(dat_covid)[3] <- "Pressure"
+names(dat_covid)[4] <- "Cloud"
+names(dat_covid)[5] <- "Humidity"
+names(dat_covid)[6] <- "Temperature"
+names(dat_covid)[7] <- "Wind_direction"
+names(dat_covid)[8] <- "Wind_speed"
+head(dat_covid)
+```
+```{r}
+## Create extra variables for time
+
+dat_covid$wday <- factor(wday(dat_covid$Time),
+                         levels = c(1,2,3,4,5,6,7),
+                         labels = c("Sun","Mon","Tue","Wed","Thu","Fri","Sat")) 
+dat_covid$year <- year(dat_covid$Time)
+dat_covid$month <- month(dat_covid$Time) 
+dat_covid$hour <- hour(dat_covid$Time) 
+dat_covid$yday <- yday(dat_covid$Time) 
+ 
+head(dat_covid[ , c("Time", "wday", "month", "hour", "yday", "year")])
+```
+
+```{r}
+##Create new data into different year. 
+#We assume that 2017, 2018,2019 is the year before covid,2020 is the year after covid.
+
+
+# Create a new dataset with observations  in 2017
+dat_2017 <- filter(dat_covid, dat_covid$year == 2017)
+head(dat_2017)
+summary(dat_2017)
+# Create a new dataset with observations  in 2018
+dat_2018 <- filter(dat_covid, dat_covid$year == 2018)
+head(dat_2018)
+summary(dat_2018)
+# Create a new dataset with observations in 2019
+dat_2019 <- filter(dat_covid, dat_covid$year == 2019)
+head(dat_2019)
+summary(dat_2019)
+# Create a new dataset with observations  in 2020
+dat_2020 <- filter(dat_covid, dat_covid$year == 2020)
+head(dat_2020)
+summary(dat_2020)
+```
+```{r}
+### Plot the Load with time to find the trend and seasonal feature.
+ggplot(data = dat_covid,aes(x=Time,y=Load,colour=month))+geom_point()+stat_smooth()
+#It can be seen that there is an obvious seasonal change in power demand, and there is no obvious trend before 2020. After 2020, the overall power demand declines, but there is still a seasonal effect. It is preliminarily judged that the lockdown of the pandemic leads to an overall reduction in power demand, which may be due to factory closure and other reasons.
+
+```
+
+```{r}
+##find load change trend in month 
+# Convert the "datetime" column to a year-month column
+dat_covid <- dat_covid %>% 
+  mutate(year_month = floor_date(dat_covid$Time, unit = "month"))
+
+# Group the data by year-month and calculate the average load for each month
+monthly_load <- dat_covid %>% 
+  group_by(year_month) %>% 
+  summarize(load_avg = mean(Load))
+
+# View the resulting data frame and plot.
+print(monthly_load,n = 45)
+summary(monthly_load)
+attach(monthly_load)
+plot(monthly_load, type = "b", lty=1)
+abline(v = year_month[37], lty = 2, col = "red")
+detach(monthly_load)
+
+### from news we could see in February 28th 2020,the UK authorities confirm the first case of the illness to be passed on inside the country.
+##It can also be seen from the figure above that the trend and size of power demand have changed dramatically since March 2020, so we divide the data into pre-covid and post-covid periods.
+```
+
+```{r}
+## Create a new dataset for pre_covid and post_covid
+dat_pre_covid <- dat_covid %>%
+  filter(Time < "2020-03-01")
+dat_post_covid <- dat_covid %>%
+  filter(Time >= "2020-03-01")
+head(dat_pre_covid)
+summary(dat_pre_covid)
+head(dat_post_covid)
+summary(dat_post_covid)
+```
+
+```{r}
+# time effect
+#day
+pre_covid_day<-"red"
+post_covid_day<-"blue"
+p1<-ggplot()
+p1+stat_smooth(data = dat_pre_covid, aes(hour,Load,colour="red"))+stat_smooth(data = dat_post_covid,aes(hour,Load,colour="blue"))
+#You can see over the course of the day electricity demand starts to rise at five o 'clock it peaks around eleven o 'clock, drops off a little bit around twelve o 'clock presumably around lunchtime, hits another peak around mid-afternoon and continues to fall. The epidemic fluctuated consistently, but the demand for electricity shifted significantly during the day.
+
+```
+
+```{r}
+#weekday
+boxplot(dat_pre_covid$wday,dat_pre_covid$Load)
+boxplot(dat_post_covid$wday,dat_post_covid$Load)
+wday_01 <- dat_pre_covid %>% filter(wday(Time) == 1)
+wday_02 <- dat_pre_covid %>% filter(wday(Time) == 2)
+wday_03 <- dat_pre_covid %>% filter(wday(Time) == 3)
+wday_04 <- dat_pre_covid %>% filter(wday(Time) == 4)
+wday_05 <- dat_pre_covid %>% filter(wday(Time) == 5)
+wday_06 <- dat_pre_covid %>% filter(wday(Time) == 6)
+wday_07 <- dat_pre_covid %>% filter(wday(Time) == 7)
+wday2_01 <- dat_post_covid %>% filter(wday(Time) == 1)
+wday2_02 <- dat_post_covid %>% filter(wday(Time) == 2)
+wday2_03 <- dat_post_covid %>% filter(wday(Time) ==3)
+wday2_04 <- dat_post_covid %>% filter(wday(Time) == 4)
+wday2_05 <- dat_post_covid %>% filter(wday(Time) == 5)
+wday2_06 <- dat_post_covid %>% filter(wday(Time) ==6)
+wday2_07 <- dat_post_covid %>% filter(wday(Time) ==7)
+p1<-ggplot()
+p1+stat_smooth(data = wday_01, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_01,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_02, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_02,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_03, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_03,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_04, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_04,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_04, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_05,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_06, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_06,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_07, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_07,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)
+
+#It can be seen that the power demand curve from Monday to Friday before and after the epidemic is basically the same, while Saturday and Sunday are significantly lower than other curves.
+```
+```{r}
+#From time dimension，as can be seen from the above, including changes in a year, a day and weekdays, has a significant impact on power demand, and there are useful variable.
+#let's see other covarables.
+#first Let's see correlation between variables.
+library(corrplot)
+summary(dat_pre_covid)
+Var_data <- dat_pre_covid[2:8]
+cor(Var_data)
+corrplot(cor(Var_data))
+#We can see that this group of variables is mainly about meteorological factors, temperature and weather do affect the change of electricity demand.pressure,cloud and humidity have strong correlation to each other,but have small correlation to load,temperature wind_dir and wind_speed have strong correlation to each other but temperature have strongest correlation to load.
+```
+```{r}
+#Use scatter plots to look at the distribution of important covariables.
+##Pressure
+#scatter
+ggplot(data = dat_pre_covid,aes(x=Time,y=Pressure,colour=month))+geom_point()
+Pressure_plot <- ggplot(data = dat_pre_covid, aes(x=Pressure, y=Load,colour= month)) + geom_point()+stat_smooth()
+Pressure_plot+stat_smooth(method = lm,colour="red")
+#The linear relationship is weak and there is obvious data missing
+
+#Temperature
+#scatter
+ggplot(data = dat_pre_covid,aes(x=Time,y=Temperature,colour=month))+geom_point()
+Tem_plot<-ggplot(data = dat_pre_covid, aes(x=Temperature, y=Load,colour= month)) + geom_point()+stat_smooth()
+Tem_plot+stat_smooth(method = lm,colour="red")
+#There is a strong linear relationship, with increasing power consumption as the temperature rises
+
+#humidity
+#scatter
+ggplot(data = dat_pre_covid,aes(x=Time,y=Humidity,colour=month))+geom_point()
+Hum_plot<-ggplot(data = dat_pre_covid, aes(x=Humidity, y=Load,colour= month)) + geom_point()+stat_smooth()
+Hum_plot+stat_smooth(method = lm,colour="red")
+#There is weak negative linear relationship between load and humidity.
+
+```
+
+```{r}
+#Linear model
+# Linear
+lm_m1 <- lm(Load ~ wday + hour + yday + Humidity + Temperature , data=dat_pre_covid)
+summary(lm_m1)
+plot(lm_m1)
+dat_pre_covid$error_pre_lm <- dat_pre_covid$Load - predict(lm_m1) 
+plot(dat_pre_covid$error_pre_lm)
+abline(h = 0, col = 2)
+```
+```{r}
+lm_m2<-lm(Load~.-error_pre_lm,data=dat_pre_covid)
+summary(lm_m2)
+```
+
+```{r}
+# GAM
+gam_m1 = gam(Load ~ wday + s(hour) + s(yday, k = 20) + s(Temperature) ,data=dat_pre_covid)
+summary(gam_m1)
+```
+
+```{r}
+#Test
+dat_pre_covid$error_pre <- dat_pre_covid$Load - predict(gam_m1) 
+plot(dat_pre_covid$error_pre)
+abline(h = 0, col = 2)
+#looks good
+
+dat_post_covid$error_post <- dat_post_covid$Load - predict(gam_m1,newdata = dat_post_covid) 
+plot(dat_post_covid$error_post)
+abline(h = 0, col = 2)
+#not good
+```
+
+```{r}
+# see
+boxplot(error_pre ~ wday, data = dat_pre_covid)
+boxplot(error_post ~ wday, data = dat_post_covid)
+abline(0,0,col="red")
+
+plot(error_pre ~ Temperature, data = dat_pre_covid)
+plot(error_post ~ Temperature, data = dat_post_covid)
+#As the temperature rises, the demand for electricity rises but slows down.
+```
+```{r}
+# Run the same model set on post_covid dataset
+m0_gam = gam(Load ~ wday + hour + yday + s(Humidity) + s(Temperature) + s(Cloud),data=dat_pre_covid)
+summary(m0_gam)
+dat_post_covid$error_post <- dat_post_covid$Load - predict(m0_gam, newdata = dat_post_covid) 
+sqrt(mean(dat_post_covid$error_post^2))
+plot(dat_post_covid$error_post)
+
+m2_gam = gam(Load ~ wday + hour + yday +  s(Temperature),data=dat_pre_covid)
+summary(m2_gam)
+
+dat_post_covid$error_post <- dat_post_covid$Load - predict(m2_gam, newdata = dat_post_covid) 
+sqrt(mean(dat_post_covid$error_post^2))
+plot(dat_post_covid$error_post)
+
+m3_gam = gam(Load ~ wday + hour + yday +  s(Humidity),data=dat_pre_covid)
+summary(m3_gam)
+
+dat_post_covid$error_post <- dat_post_covid$Load - predict(m3_gam, newdata = dat_post_covid) 
+sqrt(mean(dat_post_covid$error_post^2))
+plot(dat_post_covid$error_post)
+
+m4_gam = gam(Load ~ wday + hour + yday ,data=dat_pre_covid)
+summary(m4_gam)
+
+dat_post_covid$error_post <- dat_post_covid$Load - predict(m4_gam, newdata = dat_post_covid) 
+sqrt(mean(dat_post_covid$error_post^2))
+plot(dat_post_covid$error_post)
+
+#We can see a decrease in predict power of Humidity and Temperature under the same model set, (from 8.944/7.619 to 8.561/7.403), which means that the same amount of increment in humidity or temperature would lead to less electricity loading than expected previously. A possible explanation of this is that more and more employees are switched to remote working environment, which means that electricity consumption from office buildings are lower then in previous.
+```
+
+
+
