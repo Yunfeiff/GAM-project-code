@@ -1,0 +1,570 @@
+---
+title: "Application of GAM model to data analysis and prediction, in case of electric demand data during Covid period"
+author: "Nuo Zhang & Yunfei Feng"
+date: '2023-05-01'
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r load_library, message=TRUE, warning=TRUE, include=FALSE}
+library(readxl)
+library(lubridate)
+library(dplyr)
+library(gcookbook) 
+library(ggplot2)
+library(corrplot)
+library(mgcv)
+library(reshape2)
+```
+
+##background
+The COVID-19 related shutdowns have made significant impacts on the electric grid operation worldwide.  The global electrical demand plummeted around the planet in 2020 continuing into 2021.  Moreover, demand shape has been profoundly altered as a result of industry shutdowns, business closures, and people working from home.  In view of such massive electric demand changes, energy forecasting systems struggle to provide an accurate demand prediction, exposing operators to technical and financial risks, and further reinforcing the adverse economic impacts of the pandemic.
+
+##aim
+The research purpose of this project is to apply the learned statistical knowledge to analyze the relevant power demand data, and mainly use the statistical tool GAM to fit and forecast the power demand data before and after the covid, and try to improve the relevant model.
+
+##Data information
+the electric demand data belonged to a metropolitan electric utility and represent the total system load for the metropolitan area.  There are approximately four years of data,from 2017-03-18 to 2020-11-06.Data was provided to participants in CSV files, including the following hourly measurements and day-ahead forecasts:
+
+Electricity demand in kW.
+Air Pressure observation and forecast in kPa.
+Cloud cover observation and forecast in %.
+Humidity observation and forecast in %.
+Temperature observation and forecast in ◦C.
+Wind direction observation and forecast in degrees.
+Wind speed observation and forecast in km/h.
+
+
+```{r}
+### load electric demand data from 2017 to 2020.
+dat_covid <- read_xlsx(path = "Actuals.xlsx")
+
+summary(dat_covid)
+head(dat_covid)
+```
+```{r}
+##rename variable to remove spaces
+names(dat_covid)[1] <- "Time"
+names(dat_covid)[2] <- "Load" 
+names(dat_covid)[3] <- "Pressure"
+names(dat_covid)[4] <- "Cloud"
+names(dat_covid)[5] <- "Humidity"
+names(dat_covid)[6] <- "Temperature"
+names(dat_covid)[7] <- "Wind_direction"
+names(dat_covid)[8] <- "Wind_speed"
+head(dat_covid)
+```
+
+```{r}
+## Create extra variables for time
+
+dat_covid$wday <- factor(wday(dat_covid$Time),
+                         levels = c(1,2,3,4,5,6,7),
+                         labels = c("Sun","Mon","Tue","Wed","Thu","Fri","Sat")) 
+dat_covid$year <- year(dat_covid$Time)
+dat_covid$month <- month(dat_covid$Time) 
+dat_covid$hour <- hour(dat_covid$Time) 
+dat_covid$yday <- yday(dat_covid$Time) 
+ 
+head(dat_covid[ , c("Time", "wday", "month", "hour", "yday", "year")])
+```
+
+```{r}
+##Create new data into different year. 
+#We assume that 2017, 2018,2019 is the year before covid,2020 is the year after covid.
+
+
+# Create a new dataset with observations  in 2017
+dat_2017 <- filter(dat_covid, dat_covid$year == 2017)
+head(dat_2017)
+summary(dat_2017)
+# Create a new dataset with observations  in 2018
+dat_2018 <- filter(dat_covid, dat_covid$year == 2018)
+head(dat_2018)
+summary(dat_2018)
+# Create a new dataset with observations in 2019
+dat_2019 <- filter(dat_covid, dat_covid$year == 2019)
+head(dat_2019)
+summary(dat_2019)
+# Create a new dataset with observations  in 2020
+dat_2020 <- filter(dat_covid, dat_covid$year == 2020)
+head(dat_2020)
+summary(dat_2020)
+```
+
+```{r}
+### Plot the Load with time to find the trend and seasonal feature.
+ggplot(data = dat_covid,aes(x=Time,y=Load,colour=month))+geom_point()+stat_smooth()
+
+```
+It can be seen that there is an obvious seasonal change in power demand, and there is no obvious trend before 2020. After 2020, the overall power demand declines, but there is still a seasonal effect. 
+
+It is preliminarily judged that the lockdown of the pandemic leads to an overall reduction in power demand, which may be due to factory closure and other reasons.
+
+```{r}
+##find load change trend in month 
+# Convert the "datetime" column to a year-month column
+dat_covid <- dat_covid %>% 
+  mutate(year_month = floor_date(dat_covid$Time, unit = "month"))
+
+# Group the data by year-month and calculate the average load for each month
+monthly_load <- dat_covid %>% 
+  group_by(year_month) %>% 
+  summarize(load_avg = mean(Load))
+
+# View the resulting data frame and plot.
+print(monthly_load,n = 45)
+summary(monthly_load)
+attach(monthly_load)
+plot(monthly_load, type = "b", lty=1)
+abline(v = year_month[37], lty = 2, col = "red")
+detach(monthly_load)
+
+```
+From news we could see in February 28th 2020,the UK authorities confirm the first case of the illness to be passed on inside the country.
+
+It can also be seen from the figure above that the trend and size of power demand have changed dramatically since March 2020, so we divide the data into pre-covid and post-covid periods.
+
+Therefore, before starting the research, we should first split the data set with covid as the cut point.
+
+Create a new dataset for pre-covid and post-covid:
+```{r}
+# Create a new dataset for pre_covid and post_covid
+dat_pre_covid <- dat_covid %>%
+  filter(Time < "2020-03-01")
+dat_post_covid <- dat_covid %>%
+  filter(Time >= "2020-03-01")
+head(dat_pre_covid)
+summary(dat_pre_covid)
+head(dat_post_covid)
+summary(dat_post_covid)
+```
+
+```{r}
+# time effect
+# day
+pre_covid_day<-"red"
+post_covid_day<-"blue"
+p1<-ggplot()
+p1+stat_smooth(data = dat_pre_covid, aes(hour,Load,colour="red"))+stat_smooth(data = dat_post_covid,aes(hour,Load,colour="blue"))
+
+```
+
+You can see over the course of the day electricity demand starts to rise at five o 'clock it peaks around eleven o 'clock, drops off a little bit around twelve o 'clock presumably around lunchtime, hits another peak around mid-afternoon and continues to fall. The epidemic fluctuated consistently, but the demand for electricity shifted significantly during the day.
+
+```{r}
+# time effect
+# month
+p1 + stat_summary(data = dat_pre_covid, aes(month,Load,colour="red")) +stat_summary(data = dat_post_covid,aes(month,Load,colour="blue"))
+
+```
+
+```{r}
+#weekday
+boxplot(dat_pre_covid$wday,dat_pre_covid$Load)
+boxplot(dat_post_covid$wday,dat_post_covid$Load)
+wday_01 <- dat_pre_covid %>% filter(wday(Time) == 1)
+wday_02 <- dat_pre_covid %>% filter(wday(Time) == 2)
+wday_03 <- dat_pre_covid %>% filter(wday(Time) == 3)
+wday_04 <- dat_pre_covid %>% filter(wday(Time) == 4)
+wday_05 <- dat_pre_covid %>% filter(wday(Time) == 5)
+wday_06 <- dat_pre_covid %>% filter(wday(Time) == 6)
+wday_07 <- dat_pre_covid %>% filter(wday(Time) == 7)
+wday2_01 <- dat_post_covid %>% filter(wday(Time) == 1)
+wday2_02 <- dat_post_covid %>% filter(wday(Time) == 2)
+wday2_03 <- dat_post_covid %>% filter(wday(Time) ==3)
+wday2_04 <- dat_post_covid %>% filter(wday(Time) == 4)
+wday2_05 <- dat_post_covid %>% filter(wday(Time) == 5)
+wday2_06 <- dat_post_covid %>% filter(wday(Time) ==6)
+wday2_07 <- dat_post_covid %>% filter(wday(Time) ==7)
+p1<-ggplot()
+p1+stat_smooth(data = wday_01, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_01,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_02, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_02,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_03, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_03,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_04, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_04,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_04, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_05,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_06, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_06,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)+stat_smooth(data = wday_07, aes(hour,Load,colour = wday),se = FALSE)+stat_smooth(data = wday2_07,aes(hour,Load,colour=wday),linetype = "dashed",se = FALSE)
+```
+
+It can be seen that the power demand curve from Monday to Friday before and after the epidemic is basically the same, while Saturday and Sunday are significantly lower than other curves.
+
+From time dimension,as can be seen from the above, including changes in a year, a day and weekdays, has a significant impact on power demand, and there are useful variable.
+
+Let's see other covarables. First Let's see correlation between variables.
+
+```{r}
+library(corrplot)
+summary(dat_pre_covid)
+Var_data <- dat_pre_covid[2:8]
+cor(Var_data)
+corrplot(cor(Var_data))
+```
+
+We can see that this group of variables is mainly about meteorological factors, temperature and weather do affect the change of electricity demand.pressure,cloud and humidity have strong correlation to each other,but have small correlation to load,temperature wind_dir and wind_speed have strong correlation to each other but temperature have strongest correlation to load.
+
+
+```{r}
+#Use scatter plots to look at the distribution of important covariables.
+##Pressure
+#scatter
+ggplot(data = dat_pre_covid,aes(x=Time,y=Pressure,colour=month))+geom_point()
+Pressure_plot <- ggplot(data = dat_pre_covid, aes(x=Pressure, y=Load,colour= month)) + geom_point()+stat_smooth()
+Pressure_plot+stat_smooth(method = lm,colour="red")
+#The linear relationship is weak and there is obvious data missing
+
+#Temperature
+#scatter
+ggplot(data = dat_pre_covid,aes(x=Time,y=Temperature,colour=month))+geom_point()
+Tem_plot<-ggplot(data = dat_pre_covid, aes(x=Temperature, y=Load,colour= month)) + geom_point()+stat_smooth()
+Tem_plot+stat_smooth(method = lm,colour="red")
+#There is a strong linear relationship, with increasing power consumption as the temperature rises
+
+#humidity
+#scatter
+ggplot(data = dat_pre_covid,aes(x=Time,y=Humidity,colour=month))+geom_point()
+Hum_plot<-ggplot(data = dat_pre_covid, aes(x=Humidity, y=Load,colour= month)) + geom_point()+stat_smooth()
+Hum_plot+stat_smooth(method = lm,colour="red")
+#There is weak negative linear relationship between load and humidity.
+
+```
+
+# PRE-COVID
+
+## Linear model of pre-covid
+```{r}
+#Linear model
+# Linear
+# Here we try to build up the first linear model (and next part use it to compare with the first GAM model).
+lm_m1 <- lm(Load ~ wday + hour + yday + Humidity + Temperature , data=dat_pre_covid)
+summary(lm_m1)
+par(mfrow=c(2,2))
+plot(lm_m1)
+dat_pre_covid$error_pre_lm <- dat_pre_covid$Load - predict(lm_m1) 
+plot(dat_pre_covid$error_pre_lm)
+abline(h = 0, col = 2)
+```
+From the R console we find that this model is with very small p-value in both t-test and F-test, which means that the model is significant. And adjusted R square is over 55%, which means that the model can explain over 55% of deviation.
+
+Linear: When looking at diagnostic plots from linear regression model, the first plot shows that the linearity assumption is not hold, because the red line is not close to zero and points are distributed with a certain pattern.
+
+Normal: The second plot is testing whether residual is normally distributed. From this plot we can conclude that is is normally distributed as the Q-Q plot fits normal.
+
+Homoskedasticity: The third plot is testing for homoskedasticity, since these points on the plot are equally spreading around the horizontal line, we can conclude that it is homoskedastic.
+
+Extreme values: The fourth plot is testing for extreme values, we can find those labelled points as extreme values.
+
+The last plot is indicating that the model is accurate with mean residual of 0. Above all, we can see that, although the model is good in predicting, but it is not following all assumptions of linear model, especially that it is not a linear relationship. 
+
+To solve this problem, we can consider applying the GAM model.
+
+But before jump to the next part of the GAM model, we can also continue to try our best to make the linear model better,such as enhance the linear model by maximizing the R square just to make sure one thing that we have to use the GAM model in some cases.
+
+To conduct it, we included all variables provided from the original data set.
+
+```{r}
+lm_m2<-lm(Load~.-error_pre_lm,data=dat_pre_covid)
+summary(lm_m2)
+```
+
+From the form we can get that some of the parameters did not pass the significance test. And then we use the AIC to check the model.
+
+```{r}
+tstep<-step(lm_m2)
+summary(tstep)
+```
+
+From here we can get the AIC can not change a lot with the model.
+
+And from the previous summary, we get the R square value of 0.64, which is larger than that from the first linear model. But some variables are not significant and not good in interpreting. From this we are convinced that the next step must be to turn to the study of GAM.
+
+We will use this number as the maximum R square from linear model and compare with the R square from GAM.
+
+## GAM model of pre-covid
+```{r}
+# GAM
+gam_m1 = gam(Load ~ wday + s(hour) + s(yday, k = 20) + s(Temperature) + s(Humidity),data=dat_pre_covid)
+summary(gam_m1)
+# This model is based on the data of pre-covid. Choosing to use the parameters which is intuitively associated with common sense experience,'Temperature' and 'Humidity', and the time related information including weekday, hour of a day, and day of the whole year.
+```
+
+From the model summary, we can clearly get that both model parameters are significant and the R square is large(82.1% deviation can be explained by the model), which means our model in general is significant and the high prediction power.
+
+```{r}
+#Test
+dat_pre_covid$error_pre <- dat_pre_covid$Load - predict(gam_m1) 
+plot(dat_pre_covid$error_pre)
+abline(h = 0, col = 2)
+#We get the first model from the data of pre-covid, and then we found that the first GAM performs well with these data.
+
+dat_post_covid$error_post <- dat_post_covid$Load - predict(gam_m1,newdata = dat_post_covid) 
+plot(dat_post_covid$error_post)
+abline(h = 0, col = 2)
+#The difference between actual load and predicted load are consistently below 0, which means that predicted value from the same model is larger than the actual load.
+```
+The model residual is around 0 with no pattern, which means the model is accurate in predicting the pre_covid data.
+
+While on the second plot we can find that, when using the same model on the post_covid data, the model is no longer accurate as residuals are consistently below 0.
+
+```{r}
+# see
+boxplot(error_pre ~ wday, data = dat_pre_covid)
+boxplot(error_post ~ wday, data = dat_post_covid)
+abline(0,0,col="red")
+
+plot(error_pre ~ Temperature, data = dat_pre_covid)
+plot(error_post ~ Temperature, data = dat_post_covid)
+#As the temperature rises, the demand for electricity rises but slows down.
+```
+After breakdown the residual distribution by weekday, again we find that the model to pre_covid data is accurate as the mean of each box is zero. 
+
+Then we repeat the same process but on post_covid, again we find that the predicted value is above the actual value, in each of week day.
+
+After breakdown the residual distribution by weekday, again we find that the model to pre_covid data is accurate as the mean of each box is zero. Then we repeat the same process but on post_covid, again we find that the predicted value is above the actual value, in each of week day.
+
+At a lower temperature, on pre_covid data, actual load is over the predicted load, or saying that in lower temperature the model predicted a relatively lower electricity load. 
+
+After applying the same model on predicting post_covid, the higher temperature means predicted a much higher electricity load.
+
+The possible reason is that during the covid pandemic, office buildings are empty as more and more people are working from home. And electricity usage in home is less than in office buildings during summer time, that is why we see a lower consumption of electricity in Air Conditioner. Which lead to less electricity demand than previous in higher temperature.
+
+# POST-COVID
+
+So far, we have obtained a pre-covid GAM model which fits the pre-covid data well, we can further analysis post-covid in the next part.
+
+## Alternative GAM model 
+
+Imagine a situation:
+If we only have pre-covid data, but clearly know that covid is about to break out next, how should we make full use of the existing pre-covid data for modeling to get post-covid predictions.
+
+In this case, we can try to use different set of GAM and see the prediction performance on the post_covid dataset and then choose the best one.
+ 
+```{r}
+m0_gam = gam(Load ~ wday + s(hour) + s(yday) + s(Humidity) + s(Temperature) + s(Cloud),data=dat_pre_covid)
+summary(m0_gam)
+dat_post_covid$error_post <- dat_post_covid$Load - predict(m0_gam, newdata = dat_post_covid) 
+sqrt(mean(dat_post_covid$error_post^2))
+plot(dat_post_covid$error_post)
+```
+
+```{r}
+m1_gam = gam(Load ~ wday + s(hour) + s(yday) +  s(Temperature),data=dat_pre_covid)
+summary(m1_gam)
+dat_post_covid$error_post <- dat_post_covid$Load - predict(m1_gam, newdata = dat_post_covid) 
+sqrt(mean(dat_post_covid$error_post^2))
+plot(dat_post_covid$error_post)
+```
+
+```{r}
+m2_gam = gam(Load ~ wday + s(hour) + s(yday) +  s(Humidity),data=dat_pre_covid)
+summary(m2_gam)
+dat_post_covid$error_post <- dat_post_covid$Load - predict(m2_gam, newdata = dat_post_covid) 
+sqrt(mean(dat_post_covid$error_post^2))
+plot(dat_post_covid$error_post)
+```
+
+```{r}
+m3_gam = gam(Load ~ wday + s(hour) + s(yday) ,data=dat_pre_covid)
+summary(m3_gam)
+
+dat_post_covid$error_post <- dat_post_covid$Load - predict(m3_gam, newdata = dat_post_covid) 
+sqrt(mean(dat_post_covid$error_post^2))
+plot(dat_post_covid$error_post)
+```
+
+However, due to data limitations, it is difficult for us to make the model excellent only through the existing conditions.
+
+Next, we will use the post-covid data to analyse the post-covid predictions in a different and simpler way.
+
+
+
+
+
+### Model comparison
+
+```{r}
+dat_covid$m0 <- predict(m0_gam, newdata = dat_covid)
+dat_covid$m1 <- predict(m1_gam, newdata = dat_covid)
+dat_covid$m2 <- predict(m2_gam, newdata = dat_covid)
+dat_covid$m3 <- predict(m3_gam, newdata = dat_covid)
+
+
+df = dat_covid %>% group_by(year_month) %>%
+                   summarise(Load = mean(Load),
+                            m0 = mean(m0),
+                            m1 = mean(m1),
+                            m2 = mean(m2),
+                            m3 = mean(m3),
+                             .groups = 'drop')
+df <- melt(df, id.vars = "year_month")  
+df$year_month <- as.Date(df$year_month)
+
+ggplot(df, aes(x = year_month,y = value,col = variable))  +
+  ylim(1000000,1300000)+
+  geom_rect(aes(xmin = ymd('2020-03-01'), xmax = ymd('2020-11-01'), ymin = 1000000, ymax = Inf), alpha = 0.01,fill = "pink") +
+  geom_line() +
+  ggtitle("Actual Load Comparing with Estimated Load") +
+  xlab("year_month") + ylab("Electricity Load")
+```
+
+```{r}
+dat_covid$m0 <- predict(m0_gam, newdata = dat_covid)
+
+df = dat_covid %>% group_by(year_month) %>%
+                   summarise(Load = mean(Load),
+                            m0 = mean(m0),
+                             .groups = 'drop')
+df <- melt(df, id.vars = "year_month")  
+df$year_month <- as.Date(df$year_month)
+
+ggplot(df, aes(x = year_month,y = value,col = variable))  +
+  ylim(1000000,1300000)+
+  geom_rect(aes(xmin = ymd('2020-03-01'), xmax = ymd('2020-11-01'), ymin = 1000000, ymax = Inf), alpha = 0.01,fill = "pink") +
+  geom_line() +
+  ggtitle("Actual Load Comparing with Estimated Load") +
+  xlab("year_month") + ylab("Electricity Load")
+```
+
+```{r}
+dat_covid$m1 <- predict(m1_gam, newdata = dat_covid)
+
+df = dat_covid %>% group_by(year_month) %>%
+                   summarise(Load = mean(Load),
+                            m1 = mean(m1),
+                             .groups = 'drop')
+df <- melt(df, id.vars = "year_month")  
+df$year_month <- as.Date(df$year_month)
+
+ggplot(df, aes(x = year_month,y = value,col = variable))  +
+  ylim(1000000,1300000)+
+  geom_rect(aes(xmin = ymd('2020-03-01'), xmax = ymd('2020-11-01'), ymin = 1000000, ymax = Inf), alpha = 0.01,fill = "pink") +
+  geom_line() +
+  ggtitle("Actual Load Comparing with Estimated Load") +
+  xlab("year_month") + ylab("Electricity Load")
+```
+
+```{r}
+dat_covid$m2 <- predict(m2_gam, newdata = dat_covid)
+
+
+df = dat_covid %>% group_by(year_month) %>%
+                   summarise(Load = mean(Load),
+                            m2 = mean(m2),
+                             .groups = 'drop')
+df <- melt(df, id.vars = "year_month")  
+df$year_month <- as.Date(df$year_month)
+
+ggplot(df, aes(x = year_month,y = value,col = variable))  +
+  ylim(1000000,1300000)+
+  geom_rect(aes(xmin = ymd('2020-03-01'), xmax = ymd('2020-11-01'), ymin = 1000000, ymax = Inf), alpha = 0.01,fill = "pink") +
+  geom_line() +
+  ggtitle("Actual Load Comparing with Estimated Load") +
+  xlab("year_month") + ylab("Electricity Load")
+```
+
+```{r}
+dat_covid$m3 <- predict(m3_gam, newdata = dat_covid)
+
+
+df = dat_covid %>% group_by(year_month) %>%
+                   summarise(Load = mean(Load),
+                            m3 = mean(m3),
+                             .groups = 'drop')
+df <- melt(df, id.vars = "year_month")  
+df$year_month <- as.Date(df$year_month)
+
+ggplot(df, aes(x = year_month,y = value,col = variable))  +
+  ylim(1000000,1300000)+
+  geom_rect(aes(xmin = ymd('2020-03-01'), xmax = ymd('2020-11-01'), ymin = 1000000, ymax = Inf), alpha = 0.01,fill = "pink") +
+  geom_line() +
+  ggtitle("Actual Load Comparing with Estimated Load") +
+  xlab("year_month") + ylab("Electricity Load")
+```
+
+This plot displays all above GAM's but on the whole dataset, seem like they are similar in estimating both pre and post data and they are fail in predicting post_covid data. 
+
+This may go some way to reflect the fact that covid does have a significant effect on the dataset.
+
+### Post model
+
+```{r}
+m_gam_post = gam(Load ~ wday + s(hour) + s(yday) +  s(Humidity) + s(Temperature),data=dat_post_covid)
+summary(m_gam_post)
+```
+
+### Total model
+
+```{r}
+m_gam_all = gam(Load ~ wday + s(hour) + s(yday) + s(Humidity) + s(Temperature),data=dat_covid)
+summary(m_gam_all)
+```
+
+
+
+```{r}
+dat_covid$m_pre <- predict(gam_m1, newdata = dat_covid)
+dat_covid$m_post <- predict(m_gam_post, newdata = dat_covid)
+dat_covid$m_all <- predict(m_gam_all, newdata = dat_covid)
+
+
+df = dat_covid %>% group_by(year_month) %>%
+                   summarise(Load = mean(Load),
+                            m_pre = mean(m_pre),
+                            m_post = mean(m_post),
+                            m_all = mean(m_all),
+                             .groups = 'drop')
+df <- melt(df, id.vars = "year_month")  
+df$year_month <- as.Date(df$year_month)
+
+ggplot(df, aes(x = year_month, y = value, col = variable))  +
+  ylim(1000000,1300000)+
+  geom_rect(aes(xmin = ymd('2020-03-01'), xmax = ymd('2020-11-01'), ymin = 1000000, ymax = Inf), alpha = 0.01,fill = "pink") +
+  geom_line() +
+  ggtitle("Actual Load Comparing with Estimated Load") +
+  xlab("year_month") + ylab("Electricity Load")
+
+```
+
+Basing on the GAM model, we created models trained by pre_covid data, post_covid data and combined data and compare the performance as in the plot above. The post model fails to predict pre_covid data as it shows downward trends but it is an upward trend instead. This again indicated that pre_covid and post_covid are different. 
+
+Then we can further plot the model trained by pre_covid, post_covid and combined together and we can tell that the combined model is better in predicting both pre_covid and post_covid data.
+
+## A different method
+
+In this method, we are trying to use different dataset to fit the same model so that we can visualise the impact of covid on the data.
+
+First, we use the dataset of pre-covid era:
+```{r}
+m_pre_gam = gam(Load ~ wday + s(hour) + s(yday) + s(Humidity) + s(Temperature),data=dat_pre_covid)
+summary(m_pre_gam)
+plot(m_pre_gam)
+```
+
+And then we use the dataset of post-covid era:
+```{r}
+m_pro_gam = gam(Load ~ wday + s(hour) + s(yday) + s(Humidity) + s(Temperature),data=dat_post_covid)
+summary(m_pro_gam)
+plot(m_pro_gam)
+```
+
+By comparing the summaries above we can see a decrease in predict power of Humidity and Temperature under the same model set, (from 8.890/7.185 to 8.855/6.653), which means that the same amount of increment in humidity or temperature would lead to less electricity loading than expected previously. 
+
+One of the possible explanations of this is that more and more employees are switched to remote working environment, which means that electricity consumption from office buildings are lower then in previous.
+
+```{r}
+#Use month 11 as test and increase size of training data from March till October
+dat_post_test <- dat_post_covid[dat_post_covid$month>10,]
+n = nrow(dat_post_test)
+MSPE = 1:8
+m_post_df <- data.frame(matrix(ncol = length(MSPE), nrow = n))
+month_num = 3:10
+for (i in 1:8)  {
+  dat_post <- dat_post_covid[dat_post_covid$month < i+3,]
+  m_post <- gam(Load ~ wday + s(hour) + s(yday) +  s(Humidity)+s(Temperature),data=dat_post)
+  MSPE[i] <- mean((dat_post_test$Load - predict(m_post, newdata=dat_post_test))^2)
+  m_post_df[,i] <- predict(m_post, newdata=dat_post_test)
+}
+df <- data.frame(month_num, MSPE)
+ggplot(data = df, aes(x=month_num, y=MSPE)) + geom_line() + geom_point()
+
+df2 <- data.frame(m_post_df, dat_post_test$Load)
+colnames(df2) <- c("M1","M2","M3","M4","M5","M6","M7","M8","ActualValue")
+
+plot.ts(df2,main="Model Comparison")
+
+summary(m_post)
+```
